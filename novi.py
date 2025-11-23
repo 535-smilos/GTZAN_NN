@@ -1,0 +1,191 @@
+import numpy as np
+import tensorflow as tf
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+
+# ======================================================================
+#  UČITAVANJE PODATAKA
+# ======================================================================
+
+data = pd.read_csv("./features_30_sec.csv")
+
+filenames = None
+if 'filename' in data.columns:
+    filenames = data['filename'].values
+    data = data.drop(['filename'], axis=1)
+if 'length' in data.columns:
+    data = data.drop(['length'], axis=1)
+
+X = data.drop(['label'], axis=1).values
+y = data['label'].values
+
+encoder = LabelEncoder()
+y = encoder.fit_transform(y)
+
+# Podela Train / Test (+ filenames)
+if filenames is not None:
+    X_train, X_test, y_train, y_test, fn_train, fn_test = train_test_split(
+        X, y, filenames, test_size=0.2, random_state=42)
+else:
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42)
+    fn_train = None
+    fn_test = None
+
+# Validacioni skup za fitness
+X_train_sub, X_val, y_train_sub, y_val = train_test_split(
+    X_train, y_train, test_size=0.2, random_state=1)
+
+scaler = StandardScaler()
+X_train_sub = scaler.fit_transform(X_train_sub)
+X_val = scaler.transform(X_val)
+X_test = scaler.transform(X_test)
+
+n_inputs = X_train_sub.shape[1]
+n_hidden = 4
+n_outputs = len(np.unique(y))
+
+# ======================================================================
+#  DEFINICIJA MREŽE
+# ======================================================================
+
+def createModel():
+    model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(n_inputs,)),
+        tf.keras.layers.Dense(n_hidden, activation='relu'),
+        tf.keras.layers.Dense(n_outputs, activation='softmax')
+    ])
+    return model
+
+base_model = createModel()
+
+# Oblici težina
+shapes = [w.shape for w in base_model.get_weights()]
+totalWeights = int(np.sum([np.prod(s) for s in shapes]))
+
+def flatten_weights(weights_list):
+    return np.concatenate([w.flatten() for w in weights_list])
+
+def unflatten_to_list(vec):
+    res = []
+    idx = 0
+    for s in shapes:
+        size = int(np.prod(s))
+        res.append(vec[idx:idx+size].reshape(s))
+        idx += size
+    return res
+
+base_flat = flatten_weights(base_model.get_weights())
+
+def setModelWeights_from_flat(model, flat_vec):
+    model.set_weights(unflatten_to_list(flat_vec))
+
+# ======================================================================
+#  GENETSKI ALGORITAM
+# ======================================================================
+
+pop_size = 60
+generacija = 100
+mutation_rate = 0.05
+mutation_std = 0.02
+elitism = 2
+
+# Inicijalizacija — oko originalnih keras težina
+def initializePopulation():
+    return [base_flat + np.random.normal(0, 0.1, size=totalWeights) for _ in range(pop_size)]
+
+# Fitness – VALIDACIONA TAČNOST
+def fitness(individual):
+    m = createModel()
+    setModelWeights_from_flat(m, individual)
+    y_pred = m.predict(X_val, verbose=0)
+    acc = np.mean(np.argmax(y_pred, axis=1) == y_val)
+    return acc
+
+# Tournament selekcija
+def tournament_selection(scores, k=3):
+    idxs = np.random.choice(len(scores), size=k, replace=False)
+    return idxs[np.argmax(scores[idxs])]
+
+# Uniform crossover
+def crossover(p1, p2):
+    mask = np.random.rand(totalWeights) < 0.5
+    return np.where(mask, p1, p2)
+
+# Mutacija
+def mutate(individual):
+    mask = np.random.rand(totalWeights) < mutation_rate
+    noise = np.random.normal(0, mutation_std, size=totalWeights)
+    ind = individual.copy()
+    ind[mask] += noise[mask]
+    return ind
+
+# ======================================================================
+#  EVOLUCIJA
+# ======================================================================
+
+population = initializePopulation()
+
+for gen in range(generacija):
+    scores = np.array([fitness(ind) for ind in population])
+    best_idx = np.argmax(scores)
+    best_score = scores[best_idx]
+
+    print(f"Generacija {gen+1}, Najbolji fitness (val): {best_score:.4f}")
+
+    # Elitizam
+    ranked = np.argsort(scores)[::-1]
+    newPopulation = [population[i] for i in ranked[:elitism]]
+
+    # Ostatak populacije
+    while len(newPopulation) < pop_size:
+        p1_i = tournament_selection(scores)
+        p2_i = tournament_selection(scores)
+        child = crossover(population[p1_i], population[p2_i])
+        child = mutate(child)
+        newPopulation.append(child)
+
+    population = newPopulation
+
+# ======================================================================
+#  TESTIRANJE NA TEST SKUPU
+# ======================================================================
+
+final_scores = np.array([fitness(ind) for ind in population])
+best_idx = np.argmax(final_scores)
+best = population[best_idx]
+
+final_model = createModel()
+setModelWeights_from_flat(final_model, best)
+
+y_pred = final_model.predict(X_test, verbose=0)
+pred_labels = np.argmax(y_pred, axis=1)
+test_acc = np.mean(pred_labels == y_test)
+print(f"\nZAVRŠNA TAČNOST NA TESTU: {test_acc:.4f}")
+
+# snimanje rezultata
+try:
+    true_names = encoder.inverse_transform(y_test)
+    pred_names = encoder.inverse_transform(pred_labels)
+except:
+    true_names = y_test
+    pred_names = pred_labels
+
+if fn_test is not None:
+    results_df = pd.DataFrame({
+        'filename': fn_test,
+        'true_label': true_names,
+        'predicted_label': pred_names
+    })
+else:
+    results_df = pd.DataFrame({
+        'index': np.arange(len(y_test)),
+        'true_label': true_names,
+        'predicted_label': pred_names
+    })
+
+results_df['correct'] = results_df['true_label'] == results_df['predicted_label']
+results_df.to_csv('predictions.csv', index=False)
+
+print(f"Ukupna tacnost (provjerena iz DataFrame): {results_df['correct'].mean():.4f}")

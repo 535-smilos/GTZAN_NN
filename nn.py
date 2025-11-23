@@ -20,8 +20,6 @@ y = data['label'].values
 
 encoder=LabelEncoder()
 y=encoder.fit_transform(y)
-scaler=StandardScaler()
-X=scaler.fit_transform(X)
 
 # Podijelimo i filenames (ako postoje) tako da znamo koji red je u testnom skupu
 if filenames is not None:
@@ -31,6 +29,10 @@ else:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     fn_train = None
     fn_test = None
+
+scaler=StandardScaler()
+X_train=scaler.fit_transform(X_train)
+X_test=scaler.transform(X_test)
 
 n_inputs=X_train.shape[1]
 n_hidden=4
@@ -50,10 +52,11 @@ model=createModel()
 totalWeights=np.sum([np.prod(w.shape) for w in model.get_weights()])
 
 #genetski algoritam
-pop_size=50 #velicina populacije
+pop_size=60 #velicina populacije
 generacija=100 #broj generacija
-mutation_rate=0.1 #stopa mutacije
-elitism=4 #za selekciju
+mutation_rate=0.08#stopa mutacije
+mutation_std=0.05
+elitism=2 #za selekciju
 
 def initializePopulation():
     return [np.random.randn(totalWeights) for _ in range(pop_size)]
@@ -82,7 +85,7 @@ def crossover(p1, p2):
 def mutate(individual):
     for i in range(len(individual)):
         if np.random.rand() < mutation_rate:
-            individual[i] += np.random.randn()*0.2
+            individual[i] += np.random.randn()*mutation_std
     return individual
 
 #evolucija
