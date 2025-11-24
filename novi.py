@@ -1,11 +1,13 @@
 import numpy as np
-import tensorflow as tf
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+import tensorflow as tf
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+import matplotlib.pyplot as plt
+import os
 
 # ======================================================================
-#  UČITAVANJE PODATAKA
+# UČITAVANJE PODATAKA
 # ======================================================================
 
 data = pd.read_csv("./features_30_sec.csv")
@@ -14,6 +16,7 @@ filenames = None
 if 'filename' in data.columns:
     filenames = data['filename'].values
     data = data.drop(['filename'], axis=1)
+
 if 'length' in data.columns:
     data = data.drop(['length'], axis=1)
 
@@ -23,31 +26,32 @@ y = data['label'].values
 encoder = LabelEncoder()
 y = encoder.fit_transform(y)
 
-# Podela Train / Test (+ filenames)
+# Train/test split
 if filenames is not None:
-    X_train, X_test, y_train, y_test, fn_train, fn_test = train_test_split(
+    X_train_full, X_test, y_train_full, y_test, fn_train_full, fn_test = train_test_split(
         X, y, filenames, test_size=0.2, random_state=42)
 else:
-    X_train, X_test, y_train, y_test = train_test_split(
+    X_train_full, X_test, y_train_full, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42)
-    fn_train = None
+    fn_train_full = None
     fn_test = None
 
-# Validacioni skup za fitness
-X_train_sub, X_val, y_train_sub, y_val = train_test_split(
-    X_train, y_train, test_size=0.2, random_state=1)
+# Train_full → GA_train + VALIDATION
+X_ga_train, X_val, y_ga_train, y_val = train_test_split(
+    X_train_full, y_train_full, test_size=0.2, random_state=1)
 
+# Scaling
 scaler = StandardScaler()
-X_train_sub = scaler.fit_transform(X_train_sub)
+X_ga_train = scaler.fit_transform(X_ga_train)
 X_val = scaler.transform(X_val)
 X_test = scaler.transform(X_test)
 
-n_inputs = X_train_sub.shape[1]
-n_hidden = 4
+n_inputs = X_ga_train.shape[1]
+n_hidden = 8
 n_outputs = len(np.unique(y))
 
 # ======================================================================
-#  DEFINICIJA MREŽE
+# DEFINICIJA KERAS MREŽE
 # ======================================================================
 
 def createModel():
@@ -58,10 +62,9 @@ def createModel():
     ])
     return model
 
-base_model = createModel()
-
-# Oblici težina
-shapes = [w.shape for w in base_model.get_weights()]
+# Template za izvlačenje i vraćanje težina
+model_template = createModel()
+shapes = [w.shape for w in model_template.get_weights()]
 totalWeights = int(np.sum([np.prod(s) for s in shapes]))
 
 def flatten_weights(weights_list):
@@ -76,44 +79,43 @@ def unflatten_to_list(vec):
         idx += size
     return res
 
-base_flat = flatten_weights(base_model.get_weights())
-
 def setModelWeights_from_flat(model, flat_vec):
     model.set_weights(unflatten_to_list(flat_vec))
 
+base_flat = flatten_weights(model_template.get_weights())
+
 # ======================================================================
-#  GENETSKI ALGORITAM
+# GENETSKI ALGORITAM — ISPRAVLJENO
 # ======================================================================
 
 pop_size = 60
-generacija = 100
+generacija = 60
 mutation_rate = 0.05
-mutation_std = 0.02
+mutation_std = 0.05
 elitism = 2
 
-# Inicijalizacija — oko originalnih keras težina
+# Inicijalizacija populacije
+rng = np.random.default_rng(42)
 def initializePopulation():
-    return [base_flat + np.random.normal(0, 0.1, size=totalWeights) for _ in range(pop_size)]
+    return [rng.normal(0, 0.1, size=totalWeights) for _ in range(pop_size)]
 
-# Fitness – VALIDACIONA TAČNOST
-def fitness(individual):
-    m = createModel()
-    setModelWeights_from_flat(m, individual)
-    y_pred = m.predict(X_val, verbose=0)
-    acc = np.mean(np.argmax(y_pred, axis=1) == y_val)
+# === KLJUČNA ISPRAVKA ===
+# Za svaki fitness POSEBAN Keras model → nema kontaminacije
+def fitness(individual, X_eval, y_eval):
+    model = createModel()
+    setModelWeights_from_flat(model, individual)
+    y_pred = model.predict(X_eval, verbose=0)
+    acc = np.mean(np.argmax(y_pred, axis=1) == y_eval)
     return acc
 
-# Tournament selekcija
 def tournament_selection(scores, k=3):
     idxs = np.random.choice(len(scores), size=k, replace=False)
     return idxs[np.argmax(scores[idxs])]
 
-# Uniform crossover
 def crossover(p1, p2):
     mask = np.random.rand(totalWeights) < 0.5
     return np.where(mask, p1, p2)
 
-# Mutacija
 def mutate(individual):
     mask = np.random.rand(totalWeights) < mutation_rate
     noise = np.random.normal(0, mutation_std, size=totalWeights)
@@ -122,23 +124,32 @@ def mutate(individual):
     return ind
 
 # ======================================================================
-#  EVOLUCIJA
+# EVOLUCIJA
 # ======================================================================
 
+tf.keras.backend.clear_session()
 population = initializePopulation()
 
+best_history = []
+avg_history = []
+
 for gen in range(generacija):
-    scores = np.array([fitness(ind) for ind in population])
+    scores = np.array([fitness(ind, X_val, y_val) for ind in population])
+
     best_idx = np.argmax(scores)
     best_score = scores[best_idx]
+    avg_score = np.mean(scores)
 
-    print(f"Generacija {gen+1}, Najbolji fitness (val): {best_score:.4f}")
+    best_history.append(best_score)
+    avg_history.append(avg_score)
+
+    print(f"Generacija {gen+1}/{generacija} | Najbolji: {best_score:.4f} | Prosek: {avg_score:.4f}")
 
     # Elitizam
     ranked = np.argsort(scores)[::-1]
     newPopulation = [population[i] for i in ranked[:elitism]]
 
-    # Ostatak populacije
+    # Proizvodnja potomaka
     while len(newPopulation) < pop_size:
         p1_i = tournament_selection(scores)
         p2_i = tournament_selection(scores)
@@ -149,10 +160,10 @@ for gen in range(generacija):
     population = newPopulation
 
 # ======================================================================
-#  TESTIRANJE NA TEST SKUPU
+# NAJBOLJI MODEL — TESTIRANJE
 # ======================================================================
 
-final_scores = np.array([fitness(ind) for ind in population])
+final_scores = np.array([fitness(ind, X_val, y_val) for ind in population])
 best_idx = np.argmax(final_scores)
 best = population[best_idx]
 
@@ -162,15 +173,31 @@ setModelWeights_from_flat(final_model, best)
 y_pred = final_model.predict(X_test, verbose=0)
 pred_labels = np.argmax(y_pred, axis=1)
 test_acc = np.mean(pred_labels == y_test)
-print(f"\nZAVRŠNA TAČNOST NA TESTU: {test_acc:.4f}")
 
-# snimanje rezultata
-try:
-    true_names = encoder.inverse_transform(y_test)
-    pred_names = encoder.inverse_transform(pred_labels)
-except:
-    true_names = y_test
-    pred_names = pred_labels
+print("\n===============================================")
+print(f" ZAVRŠNA TAČNOST NA TEST SKUPU: {test_acc:.4f}")
+print("===============================================\n")
+
+# ======================================================================
+# GRAFIK EVOLUCIJE
+# ======================================================================
+
+plt.figure(figsize=(10,5))
+plt.plot(best_history, label='Najbolji u generaciji')
+plt.plot(avg_history, label='Prosečan fitness')
+plt.xlabel('Generacija')
+plt.ylabel('Accuracy')
+plt.title('Evolucija tačnosti tokom generacija')
+plt.legend()
+plt.grid(True)
+plt.savefig('evolution_accuracy.png')
+
+# ======================================================================
+# EKSPORT REZULTATA U EXCEL
+# ======================================================================
+
+true_names = encoder.inverse_transform(y_test)
+pred_names = encoder.inverse_transform(pred_labels)
 
 if fn_test is not None:
     results_df = pd.DataFrame({
@@ -186,6 +213,11 @@ else:
     })
 
 results_df['correct'] = results_df['true_label'] == results_df['predicted_label']
-results_df.to_csv('predictions.csv', index=False)
+results_df.to_excel('result.xlsx', index=False)
 
-print(f"Ukupna tacnost (provjerena iz DataFrame): {results_df['correct'].mean():.4f}")
+print(f"Ukupna tačnost (iz Excel-a): {results_df['correct'].mean():.4f}")
+
+try:
+    os.system("start EXCEL.EXE result.xlsx")
+except:
+    pass
