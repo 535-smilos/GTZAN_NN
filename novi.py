@@ -6,10 +6,7 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 import matplotlib.pyplot as plt
 import os
 
-# ======================================================================
-# UČITAVANJE PODATAKA
-# ======================================================================
-
+#data loading
 data = pd.read_csv("./features_30_sec.csv")
 
 filenames = None
@@ -26,7 +23,7 @@ y = data['label'].values
 encoder = LabelEncoder()
 y = encoder.fit_transform(y)
 
-# Train/test split
+#train/test split
 if filenames is not None:
     X_train_full, X_test, y_train_full, y_test, fn_train_full, fn_test = train_test_split(
         X, y, filenames, test_size=0.2, random_state=42)
@@ -50,10 +47,7 @@ n_inputs = X_ga_train.shape[1]
 n_hidden = 8
 n_outputs = len(np.unique(y))
 
-# ======================================================================
-# DEFINICIJA KERAS MREŽE
-# ======================================================================
-
+#mreza
 def createModel():
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=(n_inputs,)),
@@ -84,23 +78,20 @@ def setModelWeights_from_flat(model, flat_vec):
 
 base_flat = flatten_weights(model_template.get_weights())
 
-# ======================================================================
-# GENETSKI ALGORITAM — ISPRAVLJENO
-# ======================================================================
 
+#genetski algoritam
 pop_size = 60
 generacija = 60
 mutation_rate = 0.05
 mutation_std = 0.05
 elitism = 2
 
-# Inicijalizacija populacije
+#init
 rng = np.random.default_rng(42)
 def initializePopulation():
     return [rng.normal(0, 0.1, size=totalWeights) for _ in range(pop_size)]
 
-# === KLJUČNA ISPRAVKA ===
-# Za svaki fitness POSEBAN Keras model → nema kontaminacije
+#fitness, selekcija, crossover, mutacija
 def fitness(individual, X_eval, y_eval):
     model = createModel()
     setModelWeights_from_flat(model, individual)
@@ -123,10 +114,7 @@ def mutate(individual):
     ind[mask] += noise[mask]
     return ind
 
-# ======================================================================
-# EVOLUCIJA
-# ======================================================================
-
+#evolucija
 tf.keras.backend.clear_session()
 population = initializePopulation()
 
@@ -145,11 +133,11 @@ for gen in range(generacija):
 
     print(f"Generacija {gen+1}/{generacija} | Najbolji: {best_score:.4f} | Prosek: {avg_score:.4f}")
 
-    # Elitizam
+    # elitizam
     ranked = np.argsort(scores)[::-1]
     newPopulation = [population[i] for i in ranked[:elitism]]
 
-    # Proizvodnja potomaka
+    # proizvodnja potomaka
     while len(newPopulation) < pop_size:
         p1_i = tournament_selection(scores)
         p2_i = tournament_selection(scores)
@@ -158,10 +146,6 @@ for gen in range(generacija):
         newPopulation.append(child)
 
     population = newPopulation
-
-# ======================================================================
-# NAJBOLJI MODEL — TESTIRANJE
-# ======================================================================
 
 final_scores = np.array([fitness(ind, X_val, y_val) for ind in population])
 best_idx = np.argmax(final_scores)
@@ -178,23 +162,15 @@ print("\n===============================================")
 print(f" ZAVRŠNA TAČNOST NA TEST SKUPU: {test_acc:.4f}")
 print("===============================================\n")
 
-# ======================================================================
-# GRAFIK EVOLUCIJE
-# ======================================================================
-
-plt.figure(figsize=(10,5))
+plt.figure(figsize=(11,6))
 plt.plot(best_history, label='Najbolji u generaciji')
-plt.plot(avg_history, label='Prosečan fitness')
+plt.plot(avg_history, label='Prosječan fitness')
 plt.xlabel('Generacija')
 plt.ylabel('Accuracy')
 plt.title('Evolucija tačnosti tokom generacija')
 plt.legend()
 plt.grid(True)
 plt.savefig('evolution_accuracy.png')
-
-# ======================================================================
-# EKSPORT REZULTATA U EXCEL
-# ======================================================================
 
 true_names = encoder.inverse_transform(y_test)
 pred_names = encoder.inverse_transform(pred_labels)
@@ -218,6 +194,7 @@ results_df.to_excel('result.xlsx', index=False)
 print(f"Ukupna tačnost (iz Excel-a): {results_df['correct'].mean():.4f}")
 
 try:
+    os.system("start evolution_accuracy.png")
     os.system("start EXCEL.EXE result.xlsx")
 except:
     pass
